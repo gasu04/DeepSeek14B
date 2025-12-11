@@ -4,10 +4,16 @@ Google Drive RAG with DeepSeek R1 14B
 
 This script:
 1. Connects to Google Drive using your credentials
-2. Downloads and processes documents (PDF, DOCX, TXT, MD, TEX)
+2. Downloads and processes documents (PDF, DOCX, TXT, MD, TEX) from both My Drive and Shared folders
 3. Creates embeddings using Jina AI cloud embeddings
 4. Stores in ChromaDB vector database
 5. Allows querying with DeepSeek R1 14B
+
+Features:
+- Supports both "My Drive" folders and folders "Shared with me"
+- Processes multiple document types
+- Uses cloud-based embeddings (Jina AI)
+- Persistent vector storage on SSD
 
 Requirements:
 - credentials.json in the same directory
@@ -229,28 +235,53 @@ class GoogleDriveRAG:
         return files
 
     def list_folders(self):
-        """List ROOT-LEVEL folders only from Google Drive (exact names as shown in web interface)"""
-        print("📁 Listing ROOT-LEVEL folders from Google Drive...")
-        print("   (Only showing folders at the top level, not subfolders)")
+        """List folders from Google Drive - both My Drive and Shared with me"""
+        print("📁 Listing folders from Google Drive...")
+        print("   (Including both My Drive and Shared folders)")
 
-        # Only get folders that are direct children of root (My Drive)
-        query = "mimeType='application/vnd.google-apps.folder' and 'root' in parents and trashed=false"
-
-        # Get all folders (paginated if more than 1000)
         all_folders = []
-        page_token = None
 
         try:
+            # 1. Get root-level folders from My Drive
+            print("   Fetching My Drive folders...")
+            my_drive_query = "mimeType='application/vnd.google-apps.folder' and 'root' in parents and trashed=false"
+            page_token = None
+
             while True:
                 results = self.drive_service.files().list(
-                    q=query,
-                    pageSize=1000,  # Maximum allowed by API
-                    fields="nextPageToken, files(id, name)",
+                    q=my_drive_query,
+                    pageSize=1000,
+                    fields="nextPageToken, files(id, name, shared)",
                     orderBy="name",
                     pageToken=page_token
                 ).execute()
 
                 folders = results.get('files', [])
+                for folder in folders:
+                    folder['location'] = 'My Drive'
+                all_folders.extend(folders)
+
+                page_token = results.get('nextPageToken')
+                if not page_token:
+                    break
+
+            # 2. Get shared folders (shared with me)
+            print("   Fetching Shared folders...")
+            shared_query = "mimeType='application/vnd.google-apps.folder' and sharedWithMe=true and trashed=false"
+            page_token = None
+
+            while True:
+                results = self.drive_service.files().list(
+                    q=shared_query,
+                    pageSize=1000,
+                    fields="nextPageToken, files(id, name, shared)",
+                    orderBy="name",
+                    pageToken=page_token
+                ).execute()
+
+                folders = results.get('files', [])
+                for folder in folders:
+                    folder['location'] = 'Shared'
                 all_folders.extend(folders)
 
                 if len(all_folders) > 0 and len(all_folders) % 100 == 0:
@@ -260,7 +291,16 @@ class GoogleDriveRAG:
                 if not page_token:
                     break
 
-            print(f"✓ Found {len(all_folders)} folder(s)\n")
+            # Sort folders: My Drive first, then Shared, alphabetically within each
+            all_folders.sort(key=lambda x: (x['location'] != 'My Drive', x['name'].lower()))
+
+            my_drive_count = sum(1 for f in all_folders if f['location'] == 'My Drive')
+            shared_count = sum(1 for f in all_folders if f['location'] == 'Shared')
+
+            print(f"✓ Found {len(all_folders)} folder(s) total")
+            print(f"  - My Drive: {my_drive_count}")
+            print(f"  - Shared: {shared_count}\n")
+
             return all_folders
 
         except Exception as e:
@@ -302,13 +342,14 @@ class GoogleDriveRAG:
             print("   Only showing FOLDERS (files are not listed here)")
             return None
 
-        print("📂 ROOT-LEVEL FOLDERS ONLY (names match Google Drive exactly):")
-        print("   (Not showing nested subfolders)")
-        print("=" * 60)
+        print("📂 AVAILABLE FOLDERS (My Drive + Shared with me):")
+        print("=" * 70)
         print("  0. 📁 [Entire Drive - All files from all folders]")
         for i, folder in enumerate(folders, 1):
-            print(f"  {i}. 📁 {folder['name']}")
-        print("=" * 60)
+            location_icon = "💼" if folder.get('location') == 'My Drive' else "👥"
+            location_text = folder.get('location', 'Unknown')
+            print(f"  {i}. {location_icon} {folder['name']} [{location_text}]")
+        print("=" * 70)
 
         print("\n💡 Selection options:")
         print("  • Enter a number (e.g., 1, 2, 3)")
